@@ -35,6 +35,16 @@ describe('extractFieldValue', () => {
       assert.equal(extractFieldValue($, 'Estado'), 'Ativo');
     });
 
+    it('extracts Estado with data-return-value', () => {
+      const $ = cheerio.load('<input id="P72_ESTADO_1" data-return-value="4" value="Pedido Aguarda Avaliação">');
+      assert.equal(extractFieldValue($, 'Estado'), 'Pedido Aguarda Avaliação (4)');
+    });
+
+    it('ignores empty data-return-value for Estado', () => {
+      const $ = cheerio.load('<input id="P72_ESTADO_1" data-return-value="" value="Ativo">');
+      assert.equal(extractFieldValue($, 'Estado'), 'Ativo');
+    });
+
     it('returns null when input element is missing', () => {
       const $ = cheerio.load('<div>no input here</div>');
       assert.equal(extractFieldValue($, 'Situação AT/SS'), null);

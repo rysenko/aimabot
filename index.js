@@ -22,7 +22,7 @@ async function main() {
   const { dbRun, dbAll, dbGet, registerUser, close } = await openDatabase(dbPath);
   const { checkSingleUrl, checkAllUrls } = createChecker({ bot, dbRun, dbAll, httpsAgent });
   registerCommands({ bot, dbAll, dbRun, dbGet, registerUser, checkSingleUrl });
-  cron.schedule('0 10,22 * * *', async () => {
+  cron.schedule('0 10,16,22 * * *', async () => {
     try {
       await checkAllUrls();
     } catch (err) {
