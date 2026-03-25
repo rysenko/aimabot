@@ -1,7 +1,7 @@
 const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { openDatabase } = require('../lib/db');
-const { createChecker } = require('../lib/checker');
+const { createChecker, isBotBlocked } = require('../lib/checker');
 
 // HTML fixture helpers
 function makeHtml({ nome, validado, lastUpdated, estado } = {}) {
@@ -189,7 +189,7 @@ describe('checkSingleUrl', () => {
 
   it('does not throw when sendMessage fails in error handler', async () => {
     const fetcher = mock.fn(async () => { throw new Error('network down'); });
-    const failingSendMessage = mock.fn(async () => { throw new Error('bot blocked'); });
+    const failingSendMessage = mock.fn(async () => { throw new Error('some send error'); });
     const bot = { sendMessage: failingSendMessage };
 
     const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
@@ -199,6 +199,61 @@ describe('checkSingleUrl', () => {
 
     // Should resolve without throwing
     await assert.doesNotReject(() => checkSingleUrl(row));
+  });
+
+  it('removes all URLs for chat when bot is blocked during sendMessage', async () => {
+    const html = makeHtml({ nome: 'João', validado: 'Sim', lastUpdated: '2024-02-20', estado: 'Ativo' });
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const blockedSend = mock.fn(async () => {
+      throw new Error('ETELEGRAM: 403 Forbidden: bot was blocked by the user');
+    });
+    const bot = { sendMessage: blockedSend };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/a']);
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/b']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ? AND url = ?', ['1', 'https://aima.gov.pt/a']);
+
+    await checkSingleUrl(row);
+
+    // All URLs for this chat should be removed
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+  });
+
+  it('removes all URLs when bot is blocked during error notification', async () => {
+    const fetcher = mock.fn(async () => { throw new Error('network down'); });
+    const blockedSend = mock.fn(async () => {
+      throw new Error('ETELEGRAM: 403 Forbidden: bot was blocked by the user');
+    });
+    const bot = { sendMessage: blockedSend };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/a']);
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/b']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ? AND url = ?', ['1', 'https://aima.gov.pt/a']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+  });
+});
+
+describe('isBotBlocked', () => {
+  it('returns true for Telegram blocked error', () => {
+    assert.ok(isBotBlocked(new Error('ETELEGRAM: 403 Forbidden: bot was blocked by the user')));
+  });
+
+  it('returns false for other errors', () => {
+    assert.ok(!isBotBlocked(new Error('network timeout')));
+  });
+
+  it('returns false for null/undefined', () => {
+    assert.ok(!isBotBlocked(null));
+    assert.ok(!isBotBlocked(undefined));
   });
 });
 
@@ -290,5 +345,30 @@ describe('checkAllUrls', () => {
 
     assert.equal(fetcher.mock.callCount(), 0);
     assert.equal(sendMessage.mock.callCount(), 0);
+  });
+
+  it('skips remaining URLs for a blocked chat', async () => {
+    const html = makeHtml({ nome: 'Test', validado: 'Sim', lastUpdated: '2024-02-20', estado: 'Ativo' });
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const blockedSend = mock.fn(async (chatId) => {
+      if (chatId === '1') throw new Error('ETELEGRAM: 403 Forbidden: bot was blocked by the user');
+    });
+    const bot = { sendMessage: blockedSend };
+
+    const { checkAllUrls } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    // Chat 1 has 2 URLs, chat 2 has 1 URL
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/a']);
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/b']);
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['2', 'https://aima.gov.pt/c']);
+
+    await checkAllUrls();
+
+    // Only 2 fetches: URL /a (blocked on send), URL /b skipped, URL /c fetched normally
+    assert.equal(fetcher.mock.callCount(), 2);
+    // Chat 1's URLs should be deleted, chat 2's should remain
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls');
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].chat_id, '2');
   });
 });
