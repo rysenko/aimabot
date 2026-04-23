@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const cheerio = require('cheerio');
-const { formatUrlLabel, extractFieldValue } = require('../lib/scraper');
+const { formatUrlLabel, extractFieldValue, isPedidoDeferido } = require('../lib/scraper');
 
 describe('formatUrlLabel', () => {
   const url = 'https://aima.gov.pt/test';
@@ -93,5 +93,30 @@ describe('extractFieldValue', () => {
       const $ = cheerio.load('<html><body><div class="content"><p>Hello</p></div></body></html>');
       assert.equal(extractFieldValue($, 'Última Atualização'), null);
     });
+  });
+});
+
+describe('isPedidoDeferido', () => {
+  it('returns true for status ending with (6)', () => {
+    assert.equal(isPedidoDeferido('Pedido Deferido (6)'), true);
+  });
+
+  it('returns true with trailing whitespace', () => {
+    assert.equal(isPedidoDeferido('Pedido Deferido (6)   '), true);
+  });
+
+  it('returns false for other codes', () => {
+    assert.equal(isPedidoDeferido('Pedido Aguarda Avaliação (4)'), false);
+    assert.equal(isPedidoDeferido('Outro (16)'), false);
+  });
+
+  it('returns false for plain status without code', () => {
+    assert.equal(isPedidoDeferido('Pedido Deferido'), false);
+  });
+
+  it('returns false for null/undefined/non-string', () => {
+    assert.equal(isPedidoDeferido(null), false);
+    assert.equal(isPedidoDeferido(undefined), false);
+    assert.equal(isPedidoDeferido(6), false);
   });
 });

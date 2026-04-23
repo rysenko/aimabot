@@ -1,7 +1,7 @@
 const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { openDatabase } = require('../lib/db');
-const { createChecker, isBotBlocked } = require('../lib/checker');
+const { createChecker, isBotBlocked, isApprovedAndStale } = require('../lib/checker');
 
 // HTML fixture helpers
 function makeHtml({ nome, validado, lastUpdated, estado } = {}) {
@@ -239,6 +239,132 @@ describe('checkSingleUrl', () => {
 
     const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
     assert.equal(remaining.length, 0);
+  });
+});
+
+describe('auto-remove approved requests', () => {
+  const OLD_TS = '2020-01-01 00:00:00';
+  const RECENT_TS = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+  it('deletes row and notifies when deferido + updated_at > 2 months old', async () => {
+    const fetcher = mock.fn(async () => ({ data: '' }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, nome, ultima_atualizacao, situacao_at_ss, estado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['1', 'https://aima.gov.pt/test', 'João', '2019-12-15', 'Sim', 'Pedido Deferido (6)', OLD_TS]
+    );
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    const result = await checkSingleUrl(row);
+    assert.equal(result, 'skipped', 'should return "skipped" to signal no-fetch');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch when auto-removing');
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Approved request auto-removed'));
+    assert.ok(msg.includes('João'));
+    assert.ok(msg.includes('Pedido Deferido (6)'));
+    assert.ok(msg.includes('2019-12-15'));
+  });
+
+  it('does not delete when deferido but updated_at is recent', async () => {
+    const html = makeHtml({ validado: 'Sim', lastUpdated: '2026-04-01', estado: 'Ativo' });
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, ultima_atualizacao, situacao_at_ss, estado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['1', 'https://aima.gov.pt/test', '2026-04-01', 'Sim', 'Pedido Deferido (6)', RECENT_TS]
+    );
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'row should not be deleted');
+    assert.equal(fetcher.mock.callCount(), 1, 'should proceed to normal check');
+  });
+
+  it('does not delete when not deferido even if updated_at is old', async () => {
+    const html = makeHtml({ validado: 'Sim', lastUpdated: '2019-12-15', estado: 'Pendente' });
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, ultima_atualizacao, situacao_at_ss, estado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['1', 'https://aima.gov.pt/test', '2019-12-15', 'Sim', 'Pedido Aguarda Avaliação (4)', OLD_TS]
+    );
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1);
+    assert.equal(fetcher.mock.callCount(), 1, 'should proceed to normal check');
+  });
+
+  it('does not auto-remove on first check (DB estado still null)', async () => {
+    const html = makeHtml({ nome: 'Maria', validado: 'Sim', lastUpdated: '2019-12-15', estado: 'Pedido Deferido' })
+      .replace('<input id="P72_ESTADO_1" value="Pedido Deferido">', '<input id="P72_ESTADO_1" data-return-value="6" value="Pedido Deferido">');
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', 'https://aima.gov.pt/test']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'first check should populate, not auto-remove');
+    assert.equal(fetcher.mock.callCount(), 1);
+
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Started monitoring'));
+  });
+});
+
+describe('isApprovedAndStale', () => {
+  const now = new Date('2026-04-23T00:00:00');
+
+  it('returns true when deferido + updated_at > 2 months old', () => {
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', '2026-01-01 00:00:00', now), true);
+  });
+
+  it('returns false when deferido but updated_at is recent', () => {
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', '2026-04-01 00:00:00', now), false);
+  });
+
+  it('returns false when not deferido', () => {
+    assert.equal(isApprovedAndStale('Pedido Aguarda Avaliação (4)', '2026-01-01 00:00:00', now), false);
+  });
+
+  it('returns false when updated_at is null/undefined', () => {
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', null, now), false);
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', undefined, now), false);
+  });
+
+  it('returns false when updated_at is unparseable', () => {
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', 'not a date', now), false);
+  });
+
+  it('returns true exactly at the 2-month boundary', () => {
+    assert.equal(isApprovedAndStale('Pedido Deferido (6)', '2026-02-23 00:00:00', now), true);
   });
 });
 
