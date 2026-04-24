@@ -86,6 +86,23 @@ describe('per-user URL limit', () => {
   });
 });
 
+describe('legacy portal URL rejection', () => {
+  it('rejects services.aima.gov.pt URLs with a clear message and does not insert', async () => {
+    const checkSingleUrl = mock.fn(async () => {});
+    registerCommands({ bot, dbAll: db.dbAll, dbRun: db.dbRun, dbGet: db.dbGet, registerUser: db.registerUser, checkSingleUrl });
+    const handler = getMessageHandler();
+
+    await handler(makeMsg('42', 'https://services.aima.gov.pt/RAR/2fase/sumario.php'));
+
+    const lastMsg = sendMessage.mock.calls[sendMessage.mock.calls.length - 1].arguments[1];
+    assert.ok(lastMsg.includes('older AIMA portal'), `Expected legacy-portal message, got: ${lastMsg}`);
+    assert.equal(checkSingleUrl.mock.callCount(), 0);
+
+    const rows = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['42']);
+    assert.equal(rows.length, 0);
+  });
+});
+
 describe('/check rate limit', () => {
   it('rate-limits the second /check call within cooldown', async () => {
     const checkSingleUrl = mock.fn(async () => {});

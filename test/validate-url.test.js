@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { isValidAimaUrl } = require('../lib/validate-url');
+const { isValidAimaUrl, isLegacyPortalUrl, LegacyPortalError } = require('../lib/validate-url');
 
 describe('isValidAimaUrl', () => {
   describe('valid URLs', () => {
@@ -59,6 +59,46 @@ describe('isValidAimaUrl', () => {
 
     it('rejects aima.gov.pt in fragment', () => {
       assert.throws(() => isValidAimaUrl('https://evil.com/#aima.gov.pt'), Error);
+    });
+  });
+
+  describe('legacy portal rejection', () => {
+    it('rejects services.aima.gov.pt/RAR/2fase URLs', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://services.aima.gov.pt/RAR/2fase/sumario.php'),
+        LegacyPortalError
+      );
+    });
+
+    it('rejects services.aima.gov.pt/RAR/qrrep_deferido URLs with query params', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://services.aima.gov.pt/RAR/qrrep_deferido/cid.php?h=abc&n=123'),
+        LegacyPortalError
+      );
+    });
+
+    it('rejects bare services.aima.gov.pt', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://services.aima.gov.pt/'),
+        LegacyPortalError
+      );
+    });
+  });
+
+  describe('isLegacyPortalUrl', () => {
+    it('returns true for services.aima.gov.pt URLs', () => {
+      assert.equal(isLegacyPortalUrl('https://services.aima.gov.pt/RAR/2fase/sumario.php'), true);
+    });
+
+    it('returns false for the new portal', () => {
+      assert.equal(
+        isLegacyPortalUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar'),
+        false
+      );
+    });
+
+    it('returns false for malformed URLs', () => {
+      assert.equal(isLegacyPortalUrl('not a url'), false);
     });
   });
 

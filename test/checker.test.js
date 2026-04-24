@@ -339,6 +339,49 @@ describe('auto-remove approved requests', () => {
   });
 });
 
+describe('auto-remove legacy portal URLs', () => {
+  it('deletes row, notifies user, and skips fetch when URL is on services.aima.gov.pt', async () => {
+    const fetcher = mock.fn(async () => ({ data: '' }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)',
+      ['1', 'https://services.aima.gov.pt/RAR/2fase/sumario.php']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    const result = await checkSingleUrl(row);
+    assert.equal(result, 'skipped');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch legacy URLs');
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('legacy portal'));
+    assert.ok(msg.includes('services.aima.gov.pt'));
+  });
+
+  it('does not touch rows on portal-renovacoes.aima.gov.pt', async () => {
+    const html = makeHtml({ validado: 'Sim', lastUpdated: '2024-02-20', estado: 'Ativo' });
+    const fetcher = mock.fn(async () => ({ data: html }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)',
+      ['1', 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=abc']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'valid URL should remain');
+    assert.equal(fetcher.mock.callCount(), 1, 'should proceed to normal check');
+  });
+});
+
 describe('isApprovedAndStale', () => {
   const now = new Date('2026-04-23T00:00:00');
 
