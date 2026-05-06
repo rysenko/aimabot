@@ -2,18 +2,18 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 COPY package*.json ./
 
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 COPY . .
 
+RUN mkdir -p data && chown node:node data
+
 VOLUME ["/app/data"]
-
-ENV NODE_ENV=production
-
-EXPOSE 3000
 
 USER node
 
-CMD ["npm", "start"]
+CMD ["node", "index.js"]

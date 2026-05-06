@@ -104,6 +104,23 @@ describe('legacy portal URL rejection', () => {
 });
 
 describe('/check rate limit', () => {
+  it('does not start cooldown when there are no URLs to check', async () => {
+    const checkSingleUrl = mock.fn(async () => {});
+    registerCommands({ bot, dbAll: db.dbAll, dbRun: db.dbRun, dbGet: db.dbGet, registerUser: db.registerUser, checkSingleUrl });
+    const handler = getHandler(/\/check(?:@\w+)?$/);
+
+    await handler(makeMsg('42', '/check'));
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['42', 'https://aima.gov.pt/test']);
+
+    sendMessage.mock.resetCalls();
+    await handler(makeMsg('42', '/check'));
+
+    const msgs = sendMessage.mock.calls.map(c => c.arguments[1]);
+    assert.ok(!msgs.some(m => m.includes('Please wait')), 'No-URL /check should not consume cooldown');
+    assert.equal(checkSingleUrl.mock.callCount(), 1);
+  });
+
   it('rate-limits the second /check call within cooldown', async () => {
     const checkSingleUrl = mock.fn(async () => {});
     registerCommands({ bot, dbAll: db.dbAll, dbRun: db.dbRun, dbGet: db.dbGet, registerUser: db.registerUser, checkSingleUrl });
