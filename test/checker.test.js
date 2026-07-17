@@ -382,6 +382,31 @@ describe('auto-remove legacy portal URLs', () => {
   });
 });
 
+describe('auto-remove authenticated session URLs', () => {
+  it('deletes row, notifies user, and skips fetch when URL carries a session param', async () => {
+    const fetcher = mock.fn(async () => ({ data: '' }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)',
+      ['1', 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/cidadao?p3_pedido_id=233342&session=2926835542928&cs=1L3HCS3QtL']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    const result = await checkSingleUrl(row);
+    assert.equal(result, 'skipped');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch session URLs');
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('session-only URL'));
+    assert.ok(msg.includes('QR code'));
+  });
+});
+
 describe('isApprovedAndStale', () => {
   const now = new Date('2026-04-23T00:00:00');
 

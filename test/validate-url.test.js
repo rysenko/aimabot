@@ -1,6 +1,12 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { isValidAimaUrl, isLegacyPortalUrl, LegacyPortalError } = require('../lib/validate-url');
+const {
+  isValidAimaUrl,
+  isLegacyPortalUrl,
+  isAuthenticatedLinkUrl,
+  LegacyPortalError,
+  AuthenticatedLinkError,
+} = require('../lib/validate-url');
 
 describe('isValidAimaUrl', () => {
   describe('valid URLs', () => {
@@ -82,6 +88,65 @@ describe('isValidAimaUrl', () => {
         () => isValidAimaUrl('https://services.aima.gov.pt/'),
         LegacyPortalError
       );
+    });
+  });
+
+  describe('authenticated session link rejection', () => {
+    it('rejects a cidadao document link with session and cs params', () => {
+      assert.throws(
+        () => isValidAimaUrl(
+          'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/cidadao?p3_pedido_id=233342&p3_documento=PortalRenovacoes_Recibos%2FRenovacaoTituloResidencia%2F10125672%2Frecibo_233342.pdf&session=2926835542928&cs=1L3HCS3QtL'
+        ),
+        AuthenticatedLinkError
+      );
+    });
+
+    it('rejects a session link on any aima.gov.pt host', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://aima.gov.pt/ords/r/aima/aima-pr/cidadao?session=123'),
+        AuthenticatedLinkError
+      );
+    });
+
+    it('accepts a QR validar link that has no session param', () => {
+      const parsed = isValidAimaUrl(
+        'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p71_lang=pt&p72_link=VALIDATE&p72_token=abc123'
+      );
+      assert.equal(parsed.searchParams.get('p72_token'), 'abc123');
+    });
+
+    it('prefers the legacy portal error when both signals are present', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://services.aima.gov.pt/RAR/2fase/sumario.php?session=123'),
+        LegacyPortalError
+      );
+    });
+  });
+
+  describe('isAuthenticatedLinkUrl', () => {
+    it('returns true for a session-scoped portal URL', () => {
+      assert.equal(
+        isAuthenticatedLinkUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/cidadao?p3_pedido_id=1&session=123&cs=abc'),
+        true
+      );
+    });
+
+    it('returns false for a QR validar URL', () => {
+      assert.equal(
+        isAuthenticatedLinkUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=abc123'),
+        false
+      );
+    });
+
+    it('does not match params that merely contain "session"', () => {
+      assert.equal(
+        isAuthenticatedLinkUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p_session_note=x'),
+        false
+      );
+    });
+
+    it('returns false for malformed URLs', () => {
+      assert.equal(isAuthenticatedLinkUrl('not a url'), false);
     });
   });
 
