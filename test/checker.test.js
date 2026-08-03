@@ -382,6 +382,31 @@ describe('auto-remove legacy portal URLs', () => {
   });
 });
 
+describe('auto-remove tracking portal URLs', () => {
+  it('deletes row, notifies user, and skips fetch when URL is on contactenos.aima.gov.pt', async () => {
+    const fetcher = mock.fn(async () => ({ data: '' }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)',
+      ['1', 'https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a']);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    const result = await checkSingleUrl(row);
+    assert.equal(result, 'skipped');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch tracking portal URLs');
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('tracking portal'));
+    assert.ok(msg.includes('contactenos.aima.gov.pt'));
+  });
+});
+
 describe('auto-remove authenticated session URLs', () => {
   it('deletes row, notifies user, and skips fetch when URL carries a session param', async () => {
     const fetcher = mock.fn(async () => ({ data: '' }));

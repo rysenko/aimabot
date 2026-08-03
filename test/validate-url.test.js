@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const {
   isValidAimaUrl,
   isLegacyPortalUrl,
+  isTrackingPortalUrl,
   isAuthenticatedLinkUrl,
   LegacyPortalError,
+  TrackingPortalError,
   AuthenticatedLinkError,
 } = require('../lib/validate-url');
 
@@ -91,6 +93,29 @@ describe('isValidAimaUrl', () => {
     });
   });
 
+  describe('tracking portal rejection', () => {
+    it('rejects contactenos.aima.gov.pt tracking URLs', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a'),
+        TrackingPortalError
+      );
+    });
+
+    it('rejects bare contactenos.aima.gov.pt', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://contactenos.aima.gov.pt/'),
+        TrackingPortalError
+      );
+    });
+
+    it('rejects tracking URLs regardless of query params', () => {
+      assert.throws(
+        () => isValidAimaUrl('https://contactenos.aima.gov.pt/tracking/abc?lang=pt'),
+        TrackingPortalError
+      );
+    });
+  });
+
   describe('authenticated session link rejection', () => {
     it('rejects a cidadao document link with session and cs params', () => {
       assert.throws(
@@ -164,6 +189,26 @@ describe('isValidAimaUrl', () => {
 
     it('returns false for malformed URLs', () => {
       assert.equal(isLegacyPortalUrl('not a url'), false);
+    });
+  });
+
+  describe('isTrackingPortalUrl', () => {
+    it('returns true for contactenos.aima.gov.pt URLs', () => {
+      assert.equal(
+        isTrackingPortalUrl('https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a'),
+        true
+      );
+    });
+
+    it('returns false for the renewals portal', () => {
+      assert.equal(
+        isTrackingPortalUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar'),
+        false
+      );
+    });
+
+    it('returns false for malformed URLs', () => {
+      assert.equal(isTrackingPortalUrl('not a url'), false);
     });
   });
 
