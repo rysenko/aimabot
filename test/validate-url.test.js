@@ -3,12 +3,16 @@ const assert = require('node:assert/strict');
 const {
   isValidAimaUrl,
   isLegacyPortalUrl,
-  isTrackingPortalUrl,
+  isTrackingStatusUrl,
+  isUnsupportedTrackingPortalUrl,
+  getTrackingToken,
   isAuthenticatedLinkUrl,
   LegacyPortalError,
   TrackingPortalError,
   AuthenticatedLinkError,
 } = require('../lib/validate-url');
+
+const TRACKING_URL = 'https://contactenos.aima.gov.pt/tracking/00000000-0000-0000-0000-000000000000';
 
 describe('isValidAimaUrl', () => {
   describe('valid URLs', () => {
@@ -93,26 +97,32 @@ describe('isValidAimaUrl', () => {
     });
   });
 
-  describe('tracking portal rejection', () => {
-    it('rejects contactenos.aima.gov.pt tracking URLs', () => {
-      assert.throws(
-        () => isValidAimaUrl('https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a'),
-        TrackingPortalError
-      );
+  describe('contact portal tracking pages', () => {
+    it('accepts a /tracking/<uuid> status URL', () => {
+      const parsed = isValidAimaUrl(TRACKING_URL);
+      assert.equal(parsed.hostname, 'contactenos.aima.gov.pt');
+    });
+
+    it('accepts a tracking URL with a trailing slash and query params', () => {
+      const parsed = isValidAimaUrl(`${TRACKING_URL}/?lang=pt`);
+      assert.equal(parsed.hostname, 'contactenos.aima.gov.pt');
     });
 
     it('rejects bare contactenos.aima.gov.pt', () => {
-      assert.throws(
-        () => isValidAimaUrl('https://contactenos.aima.gov.pt/'),
-        TrackingPortalError
-      );
+      assert.throws(() => isValidAimaUrl('https://contactenos.aima.gov.pt/'), TrackingPortalError);
     });
 
-    it('rejects tracking URLs regardless of query params', () => {
-      assert.throws(
-        () => isValidAimaUrl('https://contactenos.aima.gov.pt/tracking/abc?lang=pt'),
-        TrackingPortalError
-      );
+    it('rejects other pages on the contact portal', () => {
+      assert.throws(() => isValidAimaUrl('https://contactenos.aima.gov.pt/contact-form'), TrackingPortalError);
+      assert.throws(() => isValidAimaUrl('https://contactenos.aima.gov.pt/submission/00000000-0000-0000-0000-000000000000'), TrackingPortalError);
+    });
+
+    it('rejects a tracking path whose token is not a uuid', () => {
+      assert.throws(() => isValidAimaUrl('https://contactenos.aima.gov.pt/tracking/abc?lang=pt'), TrackingPortalError);
+    });
+
+    it('rejects a tracking path with extra segments', () => {
+      assert.throws(() => isValidAimaUrl(`${TRACKING_URL}/extra`), TrackingPortalError);
     });
   });
 
@@ -192,23 +202,64 @@ describe('isValidAimaUrl', () => {
     });
   });
 
-  describe('isTrackingPortalUrl', () => {
-    it('returns true for contactenos.aima.gov.pt URLs', () => {
-      assert.equal(
-        isTrackingPortalUrl('https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a'),
-        true
-      );
+  describe('isTrackingStatusUrl', () => {
+    it('returns true for a /tracking/<uuid> URL', () => {
+      assert.equal(isTrackingStatusUrl(TRACKING_URL), true);
+    });
+
+    it('returns false for other contact portal pages', () => {
+      assert.equal(isTrackingStatusUrl('https://contactenos.aima.gov.pt/contact-form'), false);
     });
 
     it('returns false for the renewals portal', () => {
       assert.equal(
-        isTrackingPortalUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar'),
+        isTrackingStatusUrl('https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar'),
         false
       );
     });
 
+    it('returns false for a /tracking/ path on another aima host', () => {
+      assert.equal(isTrackingStatusUrl('https://aima.gov.pt/tracking/00000000-0000-0000-0000-000000000000'), false);
+    });
+
     it('returns false for malformed URLs', () => {
-      assert.equal(isTrackingPortalUrl('not a url'), false);
+      assert.equal(isTrackingStatusUrl('not a url'), false);
+    });
+  });
+
+  describe('isUnsupportedTrackingPortalUrl', () => {
+    it('returns true for non-tracking contact portal pages', () => {
+      assert.equal(isUnsupportedTrackingPortalUrl('https://contactenos.aima.gov.pt/upload'), true);
+    });
+
+    it('returns false for a valid tracking URL', () => {
+      assert.equal(isUnsupportedTrackingPortalUrl(TRACKING_URL), false);
+    });
+
+    it('returns false for other hosts', () => {
+      assert.equal(isUnsupportedTrackingPortalUrl('https://portal-renovacoes.aima.gov.pt/x'), false);
+    });
+
+    it('returns false for malformed URLs', () => {
+      assert.equal(isUnsupportedTrackingPortalUrl('not a url'), false);
+    });
+  });
+
+  describe('getTrackingToken', () => {
+    it('extracts the token from a tracking URL', () => {
+      assert.equal(getTrackingToken(TRACKING_URL), '00000000-0000-0000-0000-000000000000');
+    });
+
+    it('lowercases the token', () => {
+      assert.equal(
+        getTrackingToken('https://contactenos.aima.gov.pt/tracking/00A76D6B-F233-45CD-ACFE-35FC5685E1B7'),
+        '00a76d6b-f233-45cd-acfe-35fc5685e1b7'
+      );
+    });
+
+    it('returns null for non-tracking URLs', () => {
+      assert.equal(getTrackingToken('https://contactenos.aima.gov.pt/'), null);
+      assert.equal(getTrackingToken('not a url'), null);
     });
   });
 

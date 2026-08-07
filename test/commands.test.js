@@ -103,20 +103,35 @@ describe('legacy portal URL rejection', () => {
   });
 });
 
-describe('tracking portal URL rejection', () => {
-  it('rejects contactenos.aima.gov.pt URLs with a clear message and does not insert', async () => {
+describe('contact portal URLs', () => {
+  it('rejects non-tracking contactenos.aima.gov.pt URLs with a clear message and does not insert', async () => {
     const checkSingleUrl = mock.fn(async () => {});
     registerCommands({ bot, dbAll: db.dbAll, dbRun: db.dbRun, dbGet: db.dbGet, registerUser: db.registerUser, checkSingleUrl });
     const handler = getMessageHandler();
 
-    await handler(makeMsg('42', 'https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a'));
+    await handler(makeMsg('42', 'https://contactenos.aima.gov.pt/contact-form'));
 
     const lastMsg = sendMessage.mock.calls[sendMessage.mock.calls.length - 1].arguments[1];
-    assert.ok(lastMsg.includes('tracking portal'), `Expected tracking-portal message, got: ${lastMsg}`);
+    assert.ok(lastMsg.includes('tracking pages'), `Expected tracking-page message, got: ${lastMsg}`);
     assert.equal(checkSingleUrl.mock.callCount(), 0);
 
     const rows = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['42']);
     assert.equal(rows.length, 0);
+  });
+
+  it('accepts a /tracking/<uuid> URL and starts checking it', async () => {
+    const checkSingleUrl = mock.fn(async () => {});
+    registerCommands({ bot, dbAll: db.dbAll, dbRun: db.dbRun, dbGet: db.dbGet, registerUser: db.registerUser, checkSingleUrl });
+    const handler = getMessageHandler();
+
+    const url = 'https://contactenos.aima.gov.pt/tracking/00000000-0000-0000-0000-000000000000';
+    await handler(makeMsg('42', url));
+
+    assert.equal(checkSingleUrl.mock.callCount(), 1);
+
+    const rows = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['42']);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].url, url);
   });
 });
 

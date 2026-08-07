@@ -14,6 +14,30 @@ function makeHtml({ nome, validado, lastUpdated, estado } = {}) {
   return html;
 }
 
+const TRACKING_TOKEN = '00000000-0000-0000-0000-000000000000';
+const TRACKING_URL = `https://contactenos.aima.gov.pt/tracking/${TRACKING_TOKEN}`;
+
+// Mirrors the shape of GET /api/FormTracking/<token>
+function makeTrackingPayload({ historico, numeroProcessoMascarado = '*****2453', ...data } = {}) {
+  return {
+    result: {
+      type: 'EstadoProcesso',
+      submittedAt: '2026-02-23T14:06:50',
+      data: {
+        encontrado: true,
+        numeroProcessoMascarado,
+        historico: historico || [
+          { tipo: 'Deferido', labelPt: 'Decisão final – Deferido', labelEn: 'Final decision – Approved', dataCriacao: '2026-07-18T12:52:23', estadoAtual: true },
+          { tipo: 'EmAnalise', labelPt: 'Em análise', labelEn: 'Under review', dataCriacao: '2026-02-27T18:54:38', estadoAtual: false },
+        ],
+        ...data,
+      },
+    },
+    success: true,
+    error: null,
+  };
+}
+
 let db;
 let sendMessage;
 
@@ -382,15 +406,15 @@ describe('auto-remove legacy portal URLs', () => {
   });
 });
 
-describe('auto-remove tracking portal URLs', () => {
-  it('deletes row, notifies user, and skips fetch when URL is on contactenos.aima.gov.pt', async () => {
+describe('auto-remove unsupported contact portal URLs', () => {
+  it('deletes row, notifies user, and skips fetch for non-tracking contactenos.aima.gov.pt URLs', async () => {
     const fetcher = mock.fn(async () => ({ data: '' }));
     const bot = { sendMessage };
 
     const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
 
     await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)',
-      ['1', 'https://contactenos.aima.gov.pt/tracking/6fab12b8-bbc0-4e2b-a89a-d2422b96705a']);
+      ['1', 'https://contactenos.aima.gov.pt/contact-form']);
     const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
 
     const result = await checkSingleUrl(row);
@@ -398,12 +422,170 @@ describe('auto-remove tracking portal URLs', () => {
 
     const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
     assert.equal(remaining.length, 0);
-    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch tracking portal URLs');
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch unsupported contact portal URLs');
 
     assert.equal(sendMessage.mock.callCount(), 1);
     const msg = sendMessage.mock.calls[0].arguments[1];
-    assert.ok(msg.includes('tracking portal'));
-    assert.ok(msg.includes('contactenos.aima.gov.pt'));
+    assert.ok(msg.includes('unsupported link'));
+    assert.ok(msg.includes('contactenos.aima.gov.pt/tracking/'));
+  });
+
+  it('does not remove a valid /tracking/<uuid> URL', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1);
+    assert.equal(fetcher.mock.callCount(), 1);
+  });
+});
+
+describe('tracking URLs', () => {
+  it('calls the tracking JSON API instead of loading the page HTML', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    assert.equal(
+      fetcher.mock.calls[0].arguments[0],
+      `https://api-contactenos.aima.gov.pt/api/FormTracking/${TRACKING_TOKEN}`
+    );
+  });
+
+  it('stores the current state and masked number on first check', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const updated = await db.dbGet('SELECT * FROM monitored_urls WHERE id = ?', [row.id]);
+    assert.equal(updated.estado, 'Decisão final – Deferido');
+    assert.equal(updated.ultima_atualizacao, '18-07-2026 12:52');
+    assert.equal(updated.situacao_at_ss, null);
+    assert.equal(updated.nome, '*****2453');
+
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Started monitoring'));
+    assert.ok(msg.includes('📍 Estado: Decisão final – Deferido'));
+    assert.ok(msg.includes('📅 Atualizado em: 18-07-2026 12:52'));
+    assert.ok(!msg.includes('Situação AT/SS'), 'tracking rows have no AT/SS field');
+  });
+
+  it('notifies when the highlighted state moves on', async () => {
+    const payload = makeTrackingPayload({
+      historico: [
+        { tipo: 'CartaoEmProducao', labelPt: 'Cartão em produção', dataCriacao: '2026-08-01T09:30:00', estadoAtual: true },
+        { tipo: 'Deferido', labelPt: 'Decisão final – Deferido', dataCriacao: '2026-07-18T12:52:23', estadoAtual: false },
+      ],
+    });
+    const fetcher = mock.fn(async () => ({ data: payload }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, ultima_atualizacao, estado, nome)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['1', TRACKING_URL, '18-07-2026 12:52', 'Decisão final – Deferido', '*****2453']
+    );
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('CHANGES DETECTED'));
+    assert.ok(msg.includes('Cartão em produção'));
+    assert.ok(msg.includes('01-08-2026 09:30'));
+  });
+
+  it('is silent when the tracking state is unchanged', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, ultima_atualizacao, estado, nome)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['1', TRACKING_URL, '18-07-2026 12:52', 'Decisão final – Deferido', '*****2453']
+    );
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    assert.equal(sendMessage.mock.callCount(), 0);
+  });
+
+  it('reports an unknown link when the API answers 404', async () => {
+    const notFound = Object.assign(new Error('Request failed'), { response: { status: 404 } });
+    const fetcher = mock.fn(async () => { throw notFound; });
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Tracking link not found'));
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'a 404 may be transient, so the row stays');
+  });
+
+  it('reports an unknown link when the API answers encontrado: false', async () => {
+    const fetcher = mock.fn(async () => ({
+      data: { result: { type: 'EstadoProcesso', data: { encontrado: false } }, success: true },
+    }));
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Tracking link not found'));
+  });
+
+  it('surfaces non-404 API failures as regular check errors', async () => {
+    const serverError = Object.assign(new Error('Request failed'), { response: { status: 500 } });
+    const fetcher = mock.fn(async () => { throw serverError; });
+    const bot = { sendMessage };
+
+    const { checkSingleUrl } = createChecker({ bot, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', TRACKING_URL]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+
+    await checkSingleUrl(row);
+
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Error checking URL'));
+    assert.ok(msg.includes('HTTP Error: 500'));
   });
 });
 
