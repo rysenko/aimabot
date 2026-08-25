@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildTrackingApiUrl, formatTrackingDate, extractTrackingState } = require('../lib/tracking');
+const { buildTrackingApiUrl, formatTrackingDate, extractTrackingState, isCardDelivered } = require('../lib/tracking');
 
 const TOKEN = '00000000-0000-0000-0000-000000000000';
 
@@ -114,5 +114,30 @@ describe('extractTrackingState', () => {
     assert.equal(extractTrackingState({ result: null, success: false, error: { message: 'NotFound' } }), null);
     assert.equal(extractTrackingState(null), null);
     assert.equal(extractTrackingState('<html>not json</html>'), null);
+  });
+});
+
+describe('isCardDelivered', () => {
+  it('recognises the Portuguese and English terminal labels', () => {
+    assert.equal(isCardDelivered('Cartão entregue'), true);
+    assert.equal(isCardDelivered('Card delivered'), true);
+  });
+
+  it('ignores case, padding and missing diacritics', () => {
+    assert.equal(isCardDelivered('  CARTAO  ENTREGUE '), true);
+    assert.equal(isCardDelivered('card Delivered'), true);
+  });
+
+  it('returns false for every earlier tracking state', () => {
+    for (const estado of ['Cartão enviado', 'Cartão emitido', 'Cartão em produção', 'Decisão final – Deferido']) {
+      assert.equal(isCardDelivered(estado), false, estado);
+    }
+  });
+
+  it('returns false for portal estados and non-strings', () => {
+    assert.equal(isCardDelivered('Pedido Deferido (6)'), false);
+    assert.equal(isCardDelivered(null), false);
+    assert.equal(isCardDelivered(undefined), false);
+    assert.equal(isCardDelivered(''), false);
   });
 });

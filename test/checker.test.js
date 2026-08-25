@@ -1,7 +1,7 @@
 const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { openDatabase } = require('../lib/db');
-const { createChecker, isBotBlocked, isApprovedAndStale } = require('../lib/checker');
+const { createChecker, isBotBlocked, isApprovedAndStale, isDeliveredAndStale } = require('../lib/checker');
 
 // HTML fixture helpers
 function makeHtml({ nome, validado, lastUpdated, estado } = {}) {
@@ -37,6 +37,10 @@ function makeTrackingPayload({ historico, numeroProcessoMascarado = '*****2453',
     error: null,
   };
 }
+
+// Well past / well inside any retention window, for the auto-removal guards.
+const OLD_TS = '2020-01-01 00:00:00';
+const RECENT_TS = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
 let db;
 let sendMessage;
@@ -267,8 +271,6 @@ describe('checkSingleUrl', () => {
 });
 
 describe('auto-remove approved requests', () => {
-  const OLD_TS = '2020-01-01 00:00:00';
-  const RECENT_TS = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
   it('deletes row and notifies when deferido + updated_at > 2 months old', async () => {
     const fetcher = mock.fn(async () => ({ data: '' }));
@@ -640,6 +642,84 @@ describe('isApprovedAndStale', () => {
 
   it('returns true exactly at the 2-month boundary', () => {
     assert.equal(isApprovedAndStale('Pedido Deferido (6)', '2026-02-23 00:00:00', now), true);
+  });
+});
+
+describe('auto-remove delivered cards', () => {
+
+  async function insertTracking(estado, updatedAt) {
+    await db.dbRun(
+      `INSERT INTO monitored_urls (chat_id, url, nome, ultima_atualizacao, situacao_at_ss, estado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['1', TRACKING_URL, '*****2453', '21-08-2026 22:10', null, estado, updatedAt]
+    );
+    return db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+  }
+
+  it('deletes row and notifies when delivered + updated_at > 1 month old', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const { checkSingleUrl } = createChecker({ bot: { sendMessage }, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    const row = await insertTracking('Cartão entregue', OLD_TS);
+
+    const result = await checkSingleUrl(row);
+    assert.equal(result, 'skipped', 'should return "skipped" to signal no-fetch');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch when auto-removing');
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('Delivered card auto-removed'));
+    assert.ok(msg.includes('*****2453'));
+    assert.ok(msg.includes('Cartão entregue'));
+    assert.ok(msg.includes('21-08-2026 22:10'));
+  });
+
+  it('does not delete when delivered but updated_at is recent', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const { checkSingleUrl } = createChecker({ bot: { sendMessage }, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    const row = await insertTracking('Cartão entregue', RECENT_TS);
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'row should not be deleted');
+    assert.equal(fetcher.mock.callCount(), 1, 'should proceed to normal check');
+  });
+
+  it('does not delete a non-terminal tracking state, however old', async () => {
+    const fetcher = mock.fn(async () => ({ data: makeTrackingPayload() }));
+    const { checkSingleUrl } = createChecker({ bot: { sendMessage }, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+
+    const row = await insertTracking('Cartão enviado', OLD_TS);
+    await checkSingleUrl(row);
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 1, 'row should not be deleted');
+    assert.equal(fetcher.mock.callCount(), 1, 'should proceed to normal check');
+  });
+});
+
+describe('isDeliveredAndStale', () => {
+  const now = new Date('2026-09-25T00:00:00');
+
+  it('returns true when delivered + updated_at > 1 month old', () => {
+    assert.equal(isDeliveredAndStale('Cartão entregue', '2026-08-01 00:00:00', now), true);
+    assert.equal(isDeliveredAndStale('Card delivered', '2026-08-01 00:00:00', now), true);
+  });
+
+  it('returns false when delivered but updated_at is recent', () => {
+    assert.equal(isDeliveredAndStale('Cartão entregue', '2026-09-20 00:00:00', now), false);
+  });
+
+  it('returns false for earlier tracking states', () => {
+    assert.equal(isDeliveredAndStale('Cartão enviado', '2026-01-01 00:00:00', now), false);
+  });
+
+  it('returns true exactly at the 1-month boundary', () => {
+    assert.equal(isDeliveredAndStale('Cartão entregue', '2026-08-25 00:00:00', now), true);
   });
 });
 
