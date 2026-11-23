@@ -10,6 +10,9 @@ const {
   LegacyPortalError,
   TrackingPortalError,
   AuthenticatedLinkError,
+  startsWithUrl,
+  extractUrls,
+  isConcatenatedUrl,
 } = require('../lib/validate-url');
 
 const TRACKING_URL = 'https://contactenos.aima.gov.pt/tracking/00000000-0000-0000-0000-000000000000';
@@ -274,6 +277,44 @@ describe('isValidAimaUrl', () => {
 
     it('throws TypeError for URL without scheme', () => {
       assert.throws(() => isValidAimaUrl('aima.gov.pt/page'), TypeError);
+    });
+  });
+
+  describe('several links in one message', () => {
+    const A = 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=AAA&cs=1xyz';
+    const B = 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=BBB&cs=1abc';
+
+    it('startsWithUrl accepts leading whitespace and any case, nothing else', () => {
+      assert.equal(startsWithUrl(`  ${A}`), true);
+      assert.equal(startsWithUrl('HTTP://aima.gov.pt'), true);
+      assert.equal(startsWithUrl(`see ${A}`), false);
+      assert.equal(startsWithUrl('/status'), false);
+    });
+
+    it('isConcatenatedUrl detects more than one scheme', () => {
+      assert.equal(isConcatenatedUrl(A + B), true);
+      assert.equal(isConcatenatedUrl(`${A}\n${B}`), true);
+      assert.equal(isConcatenatedUrl(A), false);
+      assert.equal(isConcatenatedUrl(TRACKING_URL), false);
+    });
+
+    it('extractUrls returns a single URL unchanged', () => {
+      assert.deepEqual(extractUrls(`  ${A}  `), [A]);
+    });
+
+    it('extractUrls splits glued, newline- and space-separated links', () => {
+      assert.deepEqual(extractUrls(A + B), [A, B]);
+      assert.deepEqual(extractUrls(`${A}\n${B}`), [A, B]);
+      assert.deepEqual(extractUrls(`${A} ${B}`), [A, B]);
+    });
+
+    it('extractUrls drops duplicates', () => {
+      assert.deepEqual(extractUrls(A + A), [A]);
+      assert.deepEqual(extractUrls(`${A}\n${B}\n${A}`), [A, B]);
+    });
+
+    it('extractUrls ignores surrounding non-URL text', () => {
+      assert.deepEqual(extractUrls(`${A}\nthanks!`), [A]);
     });
   });
 });

@@ -616,6 +616,43 @@ describe('auto-remove authenticated session URLs', () => {
   });
 });
 
+describe('auto-remove concatenated URLs', () => {
+  const A = 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=AAA&cs=1xyz';
+  const B = 'https://portal-renovacoes.aima.gov.pt/ords/r/aima/aima-pr/validar?p72_token=BBB&cs=1abc';
+
+  async function runWith(url) {
+    const fetcher = mock.fn(async () => ({ data: '' }));
+    const { checkSingleUrl } = createChecker({ bot: { sendMessage }, dbRun: db.dbRun, dbAll: db.dbAll, fetcher });
+    await db.dbRun('INSERT INTO monitored_urls (chat_id, url) VALUES (?, ?)', ['1', url]);
+    const row = await db.dbGet('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    const result = await checkSingleUrl(row);
+    return { result, fetcher };
+  }
+
+  it('deletes a row holding the same link twice and sends the clean link back', async () => {
+    const { result, fetcher } = await runWith(A + A);
+    assert.equal(result, 'skipped');
+    assert.equal(fetcher.mock.callCount(), 0, 'should not fetch glued URLs');
+
+    const remaining = await db.dbAll('SELECT * FROM monitored_urls WHERE chat_id = ?', ['1']);
+    assert.equal(remaining.length, 0);
+
+    assert.equal(sendMessage.mock.callCount(), 1);
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('links glued together'));
+    assert.ok(msg.includes('the same link pasted twice'));
+    assert.ok(msg.endsWith(`again:\n\n${A}`), msg);
+  });
+
+  it('lists each distinct link when several were glued together', async () => {
+    const { result } = await runWith(`${A}\n${B}`);
+    assert.equal(result, 'skipped');
+    const msg = sendMessage.mock.calls[0].arguments[1];
+    assert.ok(msg.includes('several links'));
+    assert.ok(msg.endsWith(`again:\n\n${A}\n\n${B}`), msg);
+  });
+});
+
 describe('isApprovedAndStale', () => {
   const now = new Date('2026-04-23T00:00:00');
 
